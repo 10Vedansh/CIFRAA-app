@@ -14,13 +14,15 @@
 
 The implemented system is a **deterministic, knowledge-based, constraint-then-utility recommender**. It is **not** a trained machine-learning model: there is no training set, no labels, no fitted parameters, no train/test split, no validation, and no feedback loop. All weights, thresholds and multipliers are hand-authored constants.
 
-Three engine generations exist in the tree; only two are live:
+Three recommendation-related implementations exist in the tree; two are live:
 
 | Engine | Files | Status |
 |---|---|---|
 | V1 (legacy additive scoring) | `src/utils/recommendationEngine.ts` | **Dead code** — not imported by any page or hook |
 | V2/V3 (constraint filter + weighted composite) | `intersectionEngine.ts`, `scoringEngineV3.ts`, `categoryMappings.ts` | **Live** — dashboard personalized funds (`src/pages/Index.tsx:125`) |
-| Strategy portfolio engine | `strategyPortfolioEngine.ts`, `portfolioConstruction.ts`, `riskCapacity.ts` | **Live** — `BuildPortfolio.tsx` |
+| Strategy portfolio engine | `strategyPortfolioEngine.ts`, `riskCapacity.ts` | **Live** — `BuildPortfolio.tsx` |
+
+`src/utils/recommendation/portfolioConstruction.ts` is **dead code**: repository search finds no import or call site. Its allocation table and 40% concentration cap are not part of the deployed builder behavior. The live builder allocates using `strategyPortfolioEngine.ts::selectFundsForTemplate` (§5.3).
 
 The investor's **existing holdings are never read by any recommendation path**. The system is prospective and stateless with respect to the portfolio.
 
@@ -135,14 +137,15 @@ $$
 \text{safe}(v)=\begin{cases}\texttt{null} & v \in \{\texttt{null}, \texttt{undefined}, \text{''}, \text{'--'}\}\ \text{or}\ v \notin \mathbb{R}\\ v & \text{otherwise}\end{cases}
 $$
 
-NA values are then handled by three distinct policies:
+NA values are handled differently by filters, category aggregates, normalization, and scoring; the behavior is not uniformly “neutral”:
 
-1. **Excluded from category aggregates.** Medians and dispersion are computed only over non-null members (`:45-53`).
-2. **Neutral imputation at scoring time.** A missing metric is replaced by its category median, so the fund is neither rewarded nor punished (`:215, 219, 224, 237, 242`).
-3. **Neutral normalized constant.** For expense and AUM, a missing value yields a normalized score of exactly $0.5$ (`:248, 253`).
-4. **Filter leniency.** Every hard filter tests `if (value !== null && violates)`, so a fund with a missing metric is *never* eliminated by a metric threshold (`intersectionEngine.ts:71-78, 96-107, 132-140`).
+1. **Category medians:** missing CAGR, Sharpe, and volatility observations are omitted. Missing Sortino is first approximated from Sharpe and volatility, and that approximation is included in the category Sortino median (`:45-64`, `:88-95`).
+2. **Scoring-time substitutions:** missing Sortino, Sharpe, and volatility use the category median when available; Sortino otherwise uses its Sharpe-based approximation. Missing 3Y CAGR receives the category median for one local variable, but its category-relative z-score is explicitly set to zero (`:215-243`).
+3. **Expense/AUM score:** missing expense ratio or AUM produces an exact normalized sub-score of $0.5$ (`:245-253`).
+4. **Normalization extrema:** `computeNormStats` substitutes 0 for missing Sharpe, volatility, expense, and AUM when computing min/max extrema; missing Sortino uses the approximation (`:155-182`). Those zeros affect other funds’ normalization ranges even though the missing fund itself receives a 0.5 expense/AUM score or a category-median risk score.
+5. **Filter leniency:** a metric threshold is skipped when that metric parses as missing. A fund with missing volatility, Sharpe, 3Y return, AUM, or expense can therefore pass the corresponding filter (`intersectionEngine.ts:71-78, 96-107, 132-140`).
 
-This is a defensible design (missingness treated as ignorable) but it is **not** MCAR-justified — see §18.
+The implementation does not test or model a missingness mechanism. Calling these substitutions “neutral” is only partly accurate: direct missing expense/AUM sub-scores are neutral constants, but missingness can alter normalization extrema and filter eligibility. See §18.
 
 ### 3.2 Category aggregates
 
@@ -156,9 +159,9 @@ $$
 \sigma_c = \max\left(\sqrt{\tfrac{1}{|A_c|}\textstyle\sum_{r \in A_c}(r-\bar{A_c})^2},\; \epsilon\right),\quad \epsilon \text{ enforced by } \texttt{|| 1}
 $$
 
-with $\sigma_c$ set to 1 when the population standard deviation is 0 or the set has fewer than two members (`scoringEngineV3.ts:56, 79-84`). Medians for Sharpe, Sortino and volatility are computed identically (`:58-64`). Note this is the **population** standard deviation ($1/n$, not $1/(n-1)$).
+with $\sigma_c$ set to 1 when the observed CAGR population standard deviation is 0 or there are fewer than two observed CAGR values (`scoringEngineV3.ts:55-56, 79-84`). Sharpe, Sortino, and volatility category medians are also computed, but **only CAGR receives category dispersion and a category-relative z-score**. Missing Sortino values are approximated before computing its median; missing Sharpe and volatility are excluded from their medians (`:45-64`). The standard deviation uses the population divisor $1/n$, not $1/(n-1)$.
 
-Aggregates are memoized per fund-universe using the weak key `${funds.length}-${funds[0].id}` (`:32-33`), a within-session cache only.
+Aggregates are memoized using the weak key `${funds.length}-${funds[0].id}` (`:28-33`). Equal-length universes sharing the same first fund can collide even if their remaining members differ; this can return stale category statistics until the key changes.
 
 ### 3.3 Metric imputation by approximation
 
