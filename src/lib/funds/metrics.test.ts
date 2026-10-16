@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { toNumberOrNull, formatNumber, formatPercent, calcValue, cagr, median } from './metrics';
 import { computeFreshness, inferPlanOption, toSchemeMeta } from './contracts';
