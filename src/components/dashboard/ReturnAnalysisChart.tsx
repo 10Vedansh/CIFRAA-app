@@ -1,3 +1,4 @@
+import { IllustrativeBadge } from './IllustrativeBadge';
 import { useState, useMemo } from 'react';
 import {
   XAxis,
@@ -137,9 +138,12 @@ export function ReturnAnalysisChart({ fund, compact = false }: ReturnAnalysisCha
       <CardHeader className={cn(compact ? 'pb-2 pt-4 px-4' : 'pb-2')}>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <CardTitle className="text-sm font-medium">NAV Performance</CardTitle>
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              NAV Performance
+              <IllustrativeBadge note="Illustrative path between the start NAV and current NAV implied by the reported return. Daily NAV history is not yet available; this is not actual fund data." />
+            </CardTitle>
             {!compact && (
-              <CardDescription className="text-xs">Based on NAV movement</CardDescription>
+              <CardDescription className="text-xs">Modelled curve from reported period return, not historical NAV</CardDescription>
             )}
           </div>
           <div className="flex items-center gap-2">

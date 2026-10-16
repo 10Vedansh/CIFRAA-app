@@ -1,3 +1,4 @@
+import { IllustrativeBadge } from './IllustrativeBadge';
 import { useMemo } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -43,7 +44,7 @@ export function HoldingAnalysisCharts({ fund }: HoldingAnalysisChartsProps) {
       {/* Asset Split */}
       <Card className="glass-card border-border/30">
         <CardHeader className="pb-1">
-          <CardTitle className="text-sm font-medium">Asset Allocation</CardTitle>
+          <CardTitle className="text-sm font-medium flex items-center gap-2">Asset Allocation<IllustrativeBadge /></CardTitle>
           <p className="text-xs text-muted-foreground">Equity vs Debt vs Cash split</p>
         </CardHeader>
         <CardContent>
@@ -75,7 +76,7 @@ export function HoldingAnalysisCharts({ fund }: HoldingAnalysisChartsProps) {
       {/* Sector Split */}
       <Card className="glass-card border-border/30">
         <CardHeader className="pb-1">
-          <CardTitle className="text-sm font-medium">Sector Allocation</CardTitle>
+          <CardTitle className="text-sm font-medium flex items-center gap-2">Sector Allocation<IllustrativeBadge /></CardTitle>
           <p className="text-xs text-muted-foreground">Sector-wise portfolio breakdown</p>
         </CardHeader>
         <CardContent>

@@ -1,3 +1,4 @@
+import { IllustrativeBadge } from './IllustrativeBadge';
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,9 +22,10 @@ export function HoldingsTable({ fund }: HoldingsTableProps) {
         <CardTitle className="text-sm font-medium flex items-center gap-2">
           <Layers className="h-4 w-4 text-primary" />
           Top Holdings
+          <IllustrativeBadge note="Sample holdings typical of this category, not this fund's actual portfolio disclosure. Check the AMC factsheet for real holdings." />
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          {holdings.length} holdings • As of latest disclosure
+          {holdings.length} sample holdings • Not the fund's actual disclosure
         </p>
       </CardHeader>
       <CardContent className="pt-0">
