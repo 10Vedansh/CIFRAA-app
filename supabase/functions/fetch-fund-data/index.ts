@@ -133,14 +133,14 @@ serve(async (req) => {
       // Try workbook_data first, then fall back to mf_data
       let cacheResult = await supabase
         .from('fund_cache')
-        .select('data, last_updated')
+        .select('data, last_updated, expires_at')
         .eq('cache_key', 'workbook_data')
         .single();
       
       if (cacheResult.error || !cacheResult.data) {
         cacheResult = await supabase
           .from('fund_cache')
-          .select('data, last_updated')
+          .select('data, last_updated, expires_at')
           .eq('cache_key', 'mf_data')
           .single();
       }
@@ -157,6 +157,7 @@ serve(async (req) => {
       return new Response(JSON.stringify({ 
         funds: cacheResult.data.data,
         lastUpdated: cacheResult.data.last_updated,
+        expiresAt: cacheResult.data.expires_at,
         source: 'cache'
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
