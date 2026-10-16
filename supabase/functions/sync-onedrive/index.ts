@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { requireUser, requireAdmin } from "../_shared/auth.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX from "npm:xlsx@0.18.5";
 
@@ -178,6 +179,11 @@ function processSheet(worksheet: XLSX.WorkSheet, colMapping: string[], assetClas
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  {
+    const auth = await requireAdmin(req);
+    if (!auth.ok) return auth.response;
   }
 
   try {

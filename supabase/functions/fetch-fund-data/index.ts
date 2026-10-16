@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireAdmin } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -89,7 +90,7 @@ serve(async (req) => {
 
   try {
     const url = new URL(req.url);
-    const action = url.searchParams.get("action") || "full";
+    const action = url.searchParams.get("action") || "cached";
     
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -132,14 +133,14 @@ serve(async (req) => {
       // Try workbook_data first, then fall back to mf_data
       let cacheResult = await supabase
         .from('fund_cache')
-        .select('data, last_updated')
+        .select('data, last_updated, expires_at')
         .eq('cache_key', 'workbook_data')
         .single();
       
       if (cacheResult.error || !cacheResult.data) {
         cacheResult = await supabase
           .from('fund_cache')
-          .select('data, last_updated')
+          .select('data, last_updated, expires_at')
           .eq('cache_key', 'mf_data')
           .single();
       }
@@ -156,12 +157,23 @@ serve(async (req) => {
       return new Response(JSON.stringify({ 
         funds: cacheResult.data.data,
         lastUpdated: cacheResult.data.last_updated,
+        expiresAt: cacheResult.data.expires_at,
         source: 'cache'
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
     
+    if (action !== "full") {
+      return new Response(JSON.stringify({ error: "Unknown action" }), {
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Full refresh overwrites shared fund data: administrators / service only.
+    const auth = await requireAdmin(req);
+    if (!auth.ok) return auth.response;
+
     // Full refresh: Read workbook data from cache + supplement with AMFI daily NAV
     console.log("Starting full data refresh...");
     
@@ -240,7 +252,7 @@ serve(async (req) => {
   } catch (error) {
     console.error("Fetch fund data error:", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
+      JSON.stringify({ error: "Fund data request failed" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
