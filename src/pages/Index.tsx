@@ -1,3 +1,4 @@
+import { DataFreshnessNotice } from '@/components/dashboard/DataFreshnessNotice';
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { recommendFundsV2, RecommendationPreferences } from '@/utils/recommendation/intersectionEngine';
@@ -51,7 +52,7 @@ import {
 const Index = () => {
   const navigate = useNavigate();
   const { user, profile, isLoading: authLoading } = useAuth();
-  const { funds, isLoading, refreshFunds } = useFundCache();
+  const { funds, isLoading, refreshFunds, freshness, error: fundError } = useFundCache();
   const { watchlist, isInWatchlist, toggleWatchlist } = useWatchlist();
   const { 
     portfolio, 
@@ -286,6 +287,7 @@ const Index = () => {
               {/* Overview Tab */}
               {activeTab === 'overview' && (
                 <div className="animate-fade-in space-y-6">
+                  {!isLoading && <DataFreshnessNotice freshness={freshness} error={fundError} />}
                   {isLoading ? (
                     <DashboardLoadingState />
                   ) : personalizedFunds.length > 0 ? (
