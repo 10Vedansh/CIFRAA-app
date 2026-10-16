@@ -2,39 +2,85 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { MutualFund } from '@/types/mutualFund';
 import { toast } from 'sonner';
+import { computeFreshness, type DataFreshness, type FundDataError } from '@/lib/funds/contracts';
 
 const LOCAL_CACHE_KEY = 'fundex_mf_cache';
-
-// Check if we should refresh based on 9:30 PM IST logic
-const shouldRefreshCache = (lastUpdated: Date): boolean => {
-  const now = new Date();
-  
-  // Convert to IST (UTC+5:30)
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const nowIST = new Date(now.getTime() + istOffset);
-  const lastUpdatedIST = new Date(lastUpdated.getTime() + istOffset);
-  
-  // Get today's 9:30 PM IST
-  const today930PM = new Date(nowIST);
-  today930PM.setHours(21, 30, 0, 0);
-  
-  // If current time is after 9:30 PM IST and last update was before 9:30 PM today
-  if (nowIST > today930PM && lastUpdatedIST < today930PM) {
-    return true;
-  }
-  
-  // If last update was more than 24 hours ago
-  const hoursSinceUpdate = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60);
-  if (hoursSinceUpdate > 24) {
-    return true;
-  }
-  
-  return false;
-};
+const REQUEST_TIMEOUT_MS = 15000;
 
 interface LocalCache {
   funds: MutualFund[];
   lastUpdated: string;
+  expiresAt?: string | null;
+}
+
+interface FetchResult {
+  funds: MutualFund[];
+  lastUpdated: string;
+  expiresAt: string | null;
+}
+
+const toDate = (s?: string | null) => (s ? new Date(s) : null);
+
+function loadFromLocalCache(): LocalCache | null {
+  try {
+    const cached = localStorage.getItem(LOCAL_CACHE_KEY);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached) as LocalCache;
+    return Array.isArray(parsed?.funds) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveToLocalCache(data: MutualFund[], lastUpdated: string, expiresAt: string | null) {
+  try {
+    localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({ funds: data, lastUpdated, expiresAt }));
+  } catch (err) {
+    // Quota exceeded or storage disabled: data still works in memory for this session.
+    console.warn('Local fund cache not saved:', err);
+  }
+}
+
+/** Runs an invoke with a real timeout (supabase.functions.invoke ignores AbortController). */
+async function withTimeout<T>(p: Promise<T>, ms = REQUEST_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Request timed out')), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Read-only: server cache. Shared-data refreshes are admin/scheduled-job only.
+async function fetchServerCache(): Promise<FetchResult> {
+  const response = await withTimeout(supabase.functions.invoke('fetch-fund-data?action=cached'));
+  if (response.error) throw response.error;
+  const funds = response.data?.funds;
+  if (!Array.isArray(funds) || funds.length === 0) throw new Error('No cached fund data available');
+  return {
+    funds: funds as MutualFund[],
+    lastUpdated: response.data.lastUpdated,
+    expiresAt: response.data.expiresAt ?? null,
+  };
+}
+
+// Legacy last-resort source (signed-in users only).
+async function fetchFromLegacyAPI(): Promise<FetchResult> {
+  const { data, error } = await withTimeout(supabase.functions.invoke('mfapi'));
+  if (error) throw error;
+  if (!Array.isArray(data?.funds) || data.funds.length === 0) throw new Error('No funds returned');
+  return { funds: data.funds, lastUpdated: new Date().toISOString(), expiresAt: null };
+}
+
+function classifyError(err: unknown): FundDataError {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/401|403|unauthor|forbidden/i.test(message)) return { kind: 'unauthorized', message };
+  if (/timed out|network|fetch/i.test(message)) return { kind: 'network', message };
+  if (/no .*fund|no cached/i.test(message)) return { kind: 'empty', message };
+  return { kind: 'unknown', message };
 }
 
 export function useFundCache() {
@@ -42,224 +88,58 @@ export function useFundCache() {
   const [isLoading, setIsLoading] = useState(true);
   const [isLiveData, setIsLiveData] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [freshness, setFreshness] = useState<DataFreshness>(
+    computeFreshness(null, null, 'none'),
+  );
+  const [error, setError] = useState<FundDataError | null>(null);
 
-  // Load from local storage first for instant display
-  const loadFromLocalCache = (): LocalCache | null => {
-    try {
-      const cached = localStorage.getItem(LOCAL_CACHE_KEY);
-      if (cached) {
-        return JSON.parse(cached);
-      }
-    } catch (err) {
-      console.error('Error loading local cache:', err);
-    }
-    return null;
+  const apply = (r: FetchResult, source: DataFreshness['source']) => {
+    const lu = toDate(r.lastUpdated);
+    setFunds(r.funds);
+    setLastUpdated(lu);
+    setIsLiveData(source !== 'local-cache');
+    setFreshness(computeFreshness(lu, toDate(r.expiresAt), source));
   };
 
-  // Save to local storage
-  const saveToLocalCache = (data: MutualFund[], updatedAt: string) => {
-    try {
-      const cache: LocalCache = {
-        funds: data,
-        lastUpdated: updatedAt,
-      };
-      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(cache));
-    } catch (err) {
-      console.error('Error saving to local cache:', err);
-    }
-  };
-
-  // Fetch cached data from Supabase (fast - no external API calls)
-  const fetchCachedData = async (): Promise<{ funds: MutualFund[]; lastUpdated: string } | null> => {
-    try {
-      // Use query params via URL with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-      
-      const response = await supabase.functions.invoke('fetch-fund-data?action=cached');
-      clearTimeout(timeoutId);
-      
-      if (response.error) throw response.error;
-      if (!response.data?.funds || response.data.funds.length === 0) {
-        return null;
-      }
-      
-      return {
-        funds: response.data.funds as MutualFund[],
-        lastUpdated: response.data.lastUpdated,
-      };
-    } catch (err) {
-      console.error('Error fetching cached data:', err);
-      return null;
-    }
-  };
-
-  // Trigger full refresh via OneDrive sync
-  const triggerFullRefresh = async (): Promise<{ funds: MutualFund[]; lastUpdated: string } | null> => {
-    try {
-      // First try OneDrive sync (pulls latest data from your Excel sheet)
-      const { data: syncData, error: syncError } = await supabase.functions.invoke('sync-onedrive');
-      
-      if (!syncError && syncData?.success && syncData?.totalFunds > 0) {
-        // After sync, fetch the updated cache
-        const cachedResult = await fetchCachedData();
-        if (cachedResult) return cachedResult;
-      }
-      
-      // Fallback to old fetch-fund-data full refresh
-      const { data, error } = await supabase.functions.invoke('fetch-fund-data?action=full');
-      if (error) throw error;
-      if (!data?.funds || data.funds.length === 0) {
-        throw new Error('No funds returned from refresh');
-      }
-      
-      return {
-        funds: data.funds as MutualFund[],
-        lastUpdated: data.lastUpdated,
-      };
-    } catch (err) {
-      console.error('Error during full refresh:', err);
-      return null;
-    }
-  };
-
-  // Fallback to old mfapi function if new one fails (with timeout)
-  const fetchFromLegacyAPI = async (): Promise<MutualFund[]> => {
-    try {
-      const { data, error } = await supabase.functions.invoke('mfapi');
-      if (error) throw error;
-      if (!data?.funds || data.funds.length === 0) {
-        throw new Error('No funds returned');
-      }
-      return data.funds;
-    } catch (err) {
-      throw err;
-    }
-  };
-
-  // Main fetch function - API only, no mock data fallback
-  const fetchFunds = useCallback(async (forceRefresh = false) => {
+  const fetchFunds = useCallback(async (manual = false) => {
     setIsLoading(true);
-    
+    const local = loadFromLocalCache();
+    if (local && local.funds.length > 0) {
+      apply({ funds: local.funds, lastUpdated: local.lastUpdated, expiresAt: local.expiresAt ?? null }, 'local-cache');
+    }
+
     try {
-      // Step 1: Load from local cache for instant display
-      const localCache = loadFromLocalCache();
-      if (localCache && localCache.funds.length > 0 && !forceRefresh) {
-        setFunds(localCache.funds);
-        setLastUpdated(new Date(localCache.lastUpdated));
-        setIsLiveData(true);
-        
-        // Check if we need to refresh
-        const cacheDate = new Date(localCache.lastUpdated);
-        if (!shouldRefreshCache(cacheDate)) {
-          setIsLoading(false);
-          return; // Cache is still valid
-        }
-      }
-
-      // Step 2: Try to get data from Supabase cache (fast)
-      if (!forceRefresh) {
-        const cachedData = await fetchCachedData();
-        if (cachedData && cachedData.funds.length > 0) {
-          setFunds(cachedData.funds);
-          setIsLiveData(true);
-          setLastUpdated(new Date(cachedData.lastUpdated));
-          saveToLocalCache(cachedData.funds, cachedData.lastUpdated);
-          
-          // Check if background refresh needed
-          const cacheDate = new Date(cachedData.lastUpdated);
-          if (!shouldRefreshCache(cacheDate)) {
-            setIsLoading(false);
-            return;
-          }
-          
-          // Trigger background refresh (don't await)
-          console.log('Triggering background refresh...');
-          triggerFullRefresh().then(result => {
-            if (result) {
-              setFunds(result.funds);
-              setLastUpdated(new Date(result.lastUpdated));
-              saveToLocalCache(result.funds, result.lastUpdated);
-              console.log('Background refresh complete');
-            }
-          }).catch(console.error);
-          
-          setIsLoading(false);
-          return;
-        }
-      }
-
-      // Step 3: Force refresh or no cache - fetch from APIs
-      if (forceRefresh) {
-        toast.info('Refreshing fund data from API...');
-      }
-      
-      // Try full refresh first (AMFI + MFAPI)
-      console.log('Fetching fresh data from APIs...');
-      const freshData = await triggerFullRefresh();
-      if (freshData && freshData.funds.length > 0) {
-        setFunds(freshData.funds);
-        setIsLiveData(true);
-        setLastUpdated(new Date(freshData.lastUpdated));
-        saveToLocalCache(freshData.funds, freshData.lastUpdated);
-        
-        if (forceRefresh) {
-          toast.success(`Loaded ${freshData.funds.length} funds from API`);
-        }
-        setIsLoading(false);
-        return;
-      }
-
-      // If full refresh fails, try legacy API
-      console.log('Trying legacy mfapi...');
-      const legacyFunds = await fetchFromLegacyAPI();
-      if (legacyFunds && legacyFunds.length > 0) {
-        setFunds(legacyFunds);
-        setIsLiveData(true);
-        setLastUpdated(new Date());
-        saveToLocalCache(legacyFunds, new Date().toISOString());
-        
-        if (forceRefresh) {
-          toast.success(`Loaded ${legacyFunds.length} funds from API`);
-        }
-        setIsLoading(false);
-        return;
-      }
-
-      // If both fail but we have local cache, use it
-      if (localCache && localCache.funds.length > 0) {
-        setFunds(localCache.funds);
-        setIsLiveData(true);
-        setLastUpdated(new Date(localCache.lastUpdated));
-        toast.info('Using cached data');
-        setIsLoading(false);
-        return;
-      }
-
-      // No data available
-      toast.error('Unable to fetch fund data. Please try again later.');
-      setFunds([]);
-      setIsLiveData(false);
+      const server = await fetchServerCache();
+      apply(server, 'server-cache');
+      saveToLocalCache(server.funds, server.lastUpdated, server.expiresAt);
+      setError(null);
+      if (manual) toast.success(`Loaded ${server.funds.length} funds`);
+      return;
     } catch (err) {
-      console.error('Failed to fetch fund data:', err);
-      
-      // Fall back to local cache only
-      const localCache = loadFromLocalCache();
-      if (localCache && localCache.funds.length > 0) {
-        setFunds(localCache.funds);
-        setIsLiveData(true);
-        toast.info('Using cached data');
-      } else {
-        toast.error('Failed to fetch fund data. Please try again.');
+      const e = classifyError(err);
+      console.error('Server fund cache unavailable:', e.message);
+      if (local && local.funds.length > 0) {
+        setError(e);
+        toast.info('Showing saved fund data from this device; it may be out of date.');
+        return;
+      }
+      try {
+        const legacy = await fetchFromLegacyAPI();
+        apply(legacy, 'legacy-api');
+        setError(null);
+        return;
+      } catch (legacyErr) {
+        setError(classifyError(legacyErr));
         setFunds([]);
         setIsLiveData(false);
+        setFreshness(computeFreshness(null, null, 'none'));
+        toast.error('Unable to load fund data. Please try again later.');
       }
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     fetchFunds();
   }, [fetchFunds]);
@@ -269,6 +149,8 @@ export function useFundCache() {
     isLoading,
     isLiveData,
     lastUpdated,
+    freshness,
+    error,
     refreshFunds: () => fetchFunds(true),
   };
 }
