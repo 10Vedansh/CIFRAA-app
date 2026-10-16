@@ -17,7 +17,15 @@ serve(async (req) => {
   }
 
   try {
-    const { textContent } = await req.json();
+    let body: unknown;
+    try { body = await req.json(); } catch { body = null; }
+    const textContent = (body as { textContent?: unknown } | null)?.textContent;
+    if (typeof textContent !== "string" || textContent.trim().length < 50 || textContent.length > 300_000) {
+      return new Response(
+        JSON.stringify({ error: "Invalid statement text. Please upload a readable CAMS PDF." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
@@ -142,7 +150,7 @@ Parse carefully. Extract exact numbers. If a value is not found, use null. Alway
   } catch (e) {
     console.error("parse-cams error:", e);
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Failed to parse document" }),
+      JSON.stringify({ error: "Failed to parse document" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
