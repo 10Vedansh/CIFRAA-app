@@ -8,8 +8,10 @@ export function toNumberOrNull(v: unknown): number | null {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   if (typeof v === 'boolean') return null;
   if (typeof v !== 'string') return null;
-  const s = v.replace(/,/g, '').replace(/%$/, '').trim();
+  let s = v.replace(/,/g, '').replace(/%$/, '').trim();
   if (MISSING.has(s.toLowerCase())) return null;
+  // Workbook notation: '--6.27' means -6.27 (bare '--' is NA).
+  if (/^--(?=\d|\.)/.test(s)) s = '-' + s.slice(2);
   if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : null;

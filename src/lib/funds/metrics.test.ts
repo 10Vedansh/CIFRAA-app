@@ -11,6 +11,7 @@ describe('toNumberOrNull', () => {
     expect(toNumberOrNull('12.5%')).toBe(12.5);
     expect(toNumberOrNull('-3.2')).toBe(-3.2);
   });
+  it('reads workbook negative "--6.27"', () => expect(toNumberOrNull('--6.27')).toBe(-6.27));
   it('keeps real zero', () => expect(toNumberOrNull(0)).toBe(0));
 });
 
