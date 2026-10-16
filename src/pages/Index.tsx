@@ -1,3 +1,4 @@
+import { WorkspaceModules } from '@/components/dashboard/WorkspaceModules';
 import { DataFreshnessNotice } from '@/components/dashboard/DataFreshnessNotice';
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -314,6 +315,7 @@ const Index = () => {
                       </CardContent>
                     </Card>
                   )}
+                  <WorkspaceModules onOpenTab={setActiveTab} />
                 </div>
               )}
 
